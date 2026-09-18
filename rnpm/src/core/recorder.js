@@ -38,14 +38,3 @@ export function recordCommand({ command, args }) {
   writeLock(lock)
 }
 
-export function resetHistory({ command, args }) {
-  const lock = readLock()
-
-  lock.rnpm ??= {}
-  lock.rnpm.history = [buildRecord({ command, args })]
-
-  // Update manifest hash
-  lock.manifestIntegrity = sha256File("package.json")
-
-  writeLock(lock)
-}

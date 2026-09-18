@@ -1,10 +1,23 @@
 import { spawnSync } from "child_process"
 import { recordCommand } from "../core/recorder.js"
-import { resetHistory } from "../core/recorder.js"
 
-// Returns true if update targets a specific package
+const VALUE_OPTIONS = new Set([
+  "--before", "--cache", "--prefix", "--registry", "--tag", "--userconfig",
+  "--workspace", "-w", "--loglevel", "--omit", "--include", "--install-strategy",
+])
+
+// Returns true if update targets a specific package, ignoring option values.
 export function hasPackage(args) {
-  return args.some(arg => !arg.startsWith("-"))
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === "--") return i + 1 < args.length
+    if (VALUE_OPTIONS.has(arg)) {
+      i++
+    } else if (!arg.startsWith("-")) {
+      return true
+    }
+  }
+  return false
 }
 
 export function runUpdate(args = []) {
@@ -17,13 +30,5 @@ export function runUpdate(args = []) {
     process.exit(result.status)
   }
 
-  // If a package has been specified, append to history
-  // Else reset history (since update fully re-resolves all dependencies)
-  const incremental = hasPackage(args)
-
-  if (incremental) {
-    recordCommand({ command: "update", args })
-  } else {
-    resetHistory({ command: "update", args })
-  }
+  recordCommand({ command: "update", args })
 }
