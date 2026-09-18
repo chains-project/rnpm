@@ -84,34 +84,27 @@ function resolvePath(pkgPath, depName, packages) {
   return null
 }
 
-function mergeMetadata(metadata, conflicts, id, field, value) {
+function addMetadata(metadata, id, pkg) {
   const current = metadata.get(id) ?? {
-    source: undefined,
-    sourceSeen: false,
-    integrity: undefined,
-    integritySeen: false
-  }
-  const seenKey = `${field}Seen`
-
-  if (current[seenKey] && current[field] !== value) {
-    conflicts.push({ node: id, field })
+    sources: new Set(),
+    integrities: new Set()
   }
 
-  current[field] = value
-  current[seenKey] = true
+  if (pkg.resolved !== undefined) {
+    current.sources.add(pkg.resolved)
+  }
+
+  if (pkg.integrity !== undefined) {
+    current.integrities.add(pkg.integrity)
+  }
+
   metadata.set(id, current)
-}
-
-function addMetadata(metadata, conflicts, id, pkg) {
-  mergeMetadata(metadata, conflicts, id, "source", pkg.resolved)
-  mergeMetadata(metadata, conflicts, id, "integrity", pkg.integrity)
 }
 
 function buildGraph(lockfile) {
   const nodes = new Set()
   const edges = []
   const metadata = new Map()
-  const metadataConflicts = []
   const packages = lockfile.packages ?? {}
 
   for (const pkgPath in packages) {
@@ -120,7 +113,7 @@ function buildGraph(lockfile) {
     const dependencies = getDependencies(pkg)
 
     nodes.add(fromName)
-    addMetadata(metadata, metadataConflicts, fromName, pkg)
+    addMetadata(metadata, fromName, pkg)
 
     for (const [depName, type] of dependencies) {
       const fromInstance = pkgPath
@@ -141,7 +134,7 @@ function buildGraph(lockfile) {
     }
   }
 
-  return { nodes, edges, metadata, metadataConflicts }
+  return { nodes, edges, metadata }
 }
 
 function edgeKey(edge) {
@@ -175,18 +168,35 @@ function failure(reason, items, mapper) {
   }
 }
 
+function emptyMetadata() {
+  return {
+    sources: new Set(),
+    integrities: new Set()
+  }
+}
+
+function setsEqual(a, b) {
+  if (a.size !== b.size) return false
+
+  for (const value of a) {
+    if (!b.has(value)) return false
+  }
+
+  return true
+}
+
 function compareMetadata(graphA, graphB) {
   for (const node of graphA.nodes) {
     if (!graphB.nodes.has(node)) continue
 
-    const metaA = graphA.metadata.get(node) ?? {}
-    const metaB = graphB.metadata.get(node) ?? {}
+    const metaA = graphA.metadata.get(node) ?? emptyMetadata()
+    const metaB = graphB.metadata.get(node) ?? emptyMetadata()
 
-    if (metaA.source !== metaB.source) {
+    if (!setsEqual(metaA.sources, metaB.sources)) {
       return failure("source mismatch", [node])
     }
 
-    if (metaA.integrity !== metaB.integrity) {
+    if (!setsEqual(metaA.integrities, metaB.integrities)) {
       return failure("tarball integrity mismatch", [node])
     }
   }
@@ -195,22 +205,6 @@ function compareMetadata(graphA, graphB) {
 }
 
 function compareGraphs(graphA, graphB) {
-  if (graphA.metadataConflicts.length > 0) {
-    return failure(
-      `${graphA.metadataConflicts[0].field === "source" ? "source" : "tarball integrity"} mismatch`,
-      graphA.metadataConflicts,
-      item => item.node
-    )
-  }
-
-  if (graphB.metadataConflicts.length > 0) {
-    return failure(
-      `${graphB.metadataConflicts[0].field === "source" ? "source" : "tarball integrity"} mismatch`,
-      graphB.metadataConflicts,
-      item => item.node
-    )
-  }
-
   const removedNodes = difference(graphA.nodes, graphB.nodes)
   const addedNodes = difference(graphB.nodes, graphA.nodes)
 

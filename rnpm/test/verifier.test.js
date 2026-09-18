@@ -10,6 +10,7 @@ import {
   removeBackup,
   restoreBackupIfNeeded,
 } from "../src/core/verifier.js"
+import { compareLockfiles } from "../src/core/compareLockfiles.js"
 import { __testing__ as verifyCliTesting } from "../src/cli/verify.js"
 
 test("backupLockfile creates package-lock.json in a custom backup dir", () => {
@@ -134,6 +135,182 @@ test("buildReplayArgs keeps replay package-lock-only and before semantics", () =
   assert.equal(installArgs.includes("--package-lock-only"), true)
   assert.equal(installArgs.includes("--ignore-scripts"), true)
   assert.equal(installArgs.includes("--cache"), true)
+})
+
+test("compareLockfiles considers an identical lockfile equal", () => {
+  const file = makeLockfile({
+    packages: {
+      "node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        resolved: "https://registry.npmjs.org/foo/-/foo-1.0.0.tgz",
+      },
+    },
+  })
+
+  assert.deepEqual(compareLockfiles(file, file), {
+    ok: true,
+    message: "lockfiles match",
+  })
+})
+
+test("compareLockfiles ignores omitted metadata within the same abstract node", () => {
+  const lockfile = {
+    packages: {
+      "node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        resolved: "https://registry.npmjs.org/foo/-/foo-1.0.0.tgz",
+      },
+      "node_modules/a/node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+      },
+    },
+  }
+  const fileA = makeLockfile(lockfile)
+  const fileB = makeLockfile(lockfile)
+
+  assert.deepEqual(compareLockfiles(fileA, fileB), {
+    ok: true,
+    message: "lockfiles match",
+  })
+})
+
+test("compareLockfiles treats metadata values as unordered sets", () => {
+  const fileA = makeLockfile({
+    packages: {
+      "node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        resolved: "sourceA",
+      },
+      "node_modules/a/node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        resolved: "sourceB",
+      },
+    },
+  })
+  const fileB = makeLockfile({
+    packages: {
+      "node_modules/a/node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        resolved: "sourceB",
+      },
+      "node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        resolved: "sourceA",
+      },
+    },
+  })
+
+  assert.deepEqual(compareLockfiles(fileA, fileB), {
+    ok: true,
+    message: "lockfiles match",
+  })
+})
+
+test("compareLockfiles reports genuine source mismatches", () => {
+  const fileA = makeLockfile({
+    packages: {
+      "node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        resolved: "sourceA",
+      },
+    },
+  })
+  const fileB = makeLockfile({
+    packages: {
+      "node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        resolved: "sourceB",
+      },
+    },
+  })
+
+  const result = compareLockfiles(fileA, fileB)
+
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, "source mismatch")
+})
+
+test("compareLockfiles reports genuine integrity mismatches", () => {
+  const fileA = makeLockfile({
+    packages: {
+      "node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        integrity: "integrityA",
+      },
+    },
+  })
+  const fileB = makeLockfile({
+    packages: {
+      "node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        integrity: "integrityB",
+      },
+    },
+  })
+
+  const result = compareLockfiles(fileA, fileB)
+
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, "tarball integrity mismatch")
+})
+
+test("compareLockfiles reports additional real source values", () => {
+  const fileA = makeLockfile({
+    packages: {
+      "node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        resolved: "sourceA",
+      },
+    },
+  })
+  const fileB = makeLockfile({
+    packages: {
+      "node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        resolved: "sourceA",
+      },
+      "node_modules/a/node_modules/foo": {
+        name: "foo",
+        version: "1.0.0",
+        resolved: "sourceB",
+      },
+    },
+  })
+
+  const result = compareLockfiles(fileA, fileB)
+
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, "source mismatch")
+})
+
+test("compareLockfiles succeeds when comparing fixture lockfiles to themselves", () => {
+  const fixtureLockfiles = fs
+    .readdirSync("test", { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => path.join("test", entry.name, "package-lock.json"))
+    .filter(file => fs.existsSync(file))
+
+  assert.notEqual(fixtureLockfiles.length, 0)
+
+  for (const file of fixtureLockfiles) {
+    assert.deepEqual(compareLockfiles(file, file), {
+      ok: true,
+      message: "lockfiles match",
+    })
+  }
 })
 
 test("runVerify restores the original lockfile before comparing proof", async () => {
@@ -273,6 +450,15 @@ function makeProject(files) {
   }
 
   return root
+}
+
+function makeLockfile(lockfile) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rnpm-lockfile-test-"))
+  const file = path.join(root, "package-lock.json")
+
+  fs.writeFileSync(file, JSON.stringify(lockfile, null, 2))
+
+  return file
 }
 
 function makeVerifyDeps(overrides = {}) {
