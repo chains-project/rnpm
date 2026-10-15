@@ -1,253 +1,263 @@
 import fs from "fs"
-import crypto from "crypto"
 
-/**
-* Creates unique identifier for nodes of the dependency graph
-* @param {string} name - dependency name
-* @param {string} version - dependency version
-* @returns {string} name@version
-*/
-function makeName(name, version) {
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"))
+}
+
+function getPackageName(pkgPath, pkg) {
+  if (pkg.name) return pkg.name
+  if (pkgPath === "") return pkg.name || "root"
+
+  const parts = pkgPath.split("node_modules/").filter(Boolean)
+  return parts[parts.length - 1]
+}
+
+function nodeId(pkgPath, pkg) {
+  const name = getPackageName(pkgPath, pkg)
+  const version = pkg.version || "unknown"
+
   return `${name}@${version}`
 }
 
-/**
- * Selects and normalizes specific attributes from a package object
- * 
- * Returns a sorted list of [key, value] pairs for the attributes.
- * Used to ensure deterministic comparison when hashing dependency graphs.
- * @param {object} pkg - Package object from lockfile
- * @param {set<string>|null} filter - Set of attribute names to extract (e.g. dev, optional, peer) 
- * @returns {Array<[string, any]>} Sorted list of attribute key-value pairs
- */
+function packageNameFromNode(node) {
+  const versionSep = node.lastIndexOf("@")
+  if (versionSep <= 0) return node
+  return node.slice(0, versionSep)
+}
 
-function pickAttrs(pkg, filter) {
-  if (!filter) return []
-  const attrs = []
+function getDependencies(pkg) {
+  const dependencies = []
 
-  for (const key of filter) {
-    if (key in pkg) {
-      attrs.push([key, pkg[key]])
+  const add = (deps, type) => {
+    if (!deps) return
+
+    for (const depName of Object.keys(deps)) {
+      dependencies.push([depName, type])
     }
   }
 
-  // Ensure deterministic ordering of attributes by key for stable hashing
-  attrs.sort((a, b) => a[0].localeCompare(b[0]))
-  return attrs
+  add(pkg.dependencies, "prod")
+  add(pkg.peerDependencies, "peer")
+  add(pkg.optionalDependencies, "optional")
+  add(pkg.devDependencies, "dev")
+
+  return dependencies
 }
 
-/**
- * Extract dependency edges from a npm/rnpm lockfile v2/v3.
- * 
- * An edge represents a dependency relationship: [parentName, childName, attributes],
- * where parentName and childName are of the form "name@version"
- * 
- * Lockfile v2/v3 presents transitive dependencies in a flat structure
- * To extract dependency relationships, we use the install paths instead 
- * of tree traversal
- * 
- * Notes:
- * - Builds a logical dependency graph from the lockfile
- * - That is, package identity is based on name@version
- * - Duplicate packages are treated as a single node
- * - It does not necessarily represent the install tree
- * 
- * @param {object} data - Parsed lockfile JSON 
- * @param {Set<string>|null} attrFilter - Attributes to include for edges
- * @returns {Array<[string, string, Array]>} List of dependency edges
- */
-function edgesFromLockV3(data, attrFilter) {
+function parentPath(pkgPath) {
+  if (!pkgPath) return null
 
-  const edges = []
-  const packages = data.packages || {}
+  const parts = pkgPath.split("/")
 
-  for (const [pkgPath, pkg] of Object.entries(packages)) {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i] === "node_modules") {
+      return parts.slice(0, i).join("/")
+    }
+  }
 
-    // Only process dependencies with a specified version
-    // TODO: Verify if any valid lockfile entries may lack a version
-    if (!pkg.version) continue
+  return ""
+}
 
-    let parentName
-    let parentPath
+function resolvePath(pkgPath, depName, packages) {
+  let currentPath = pkgPath
 
-    if (pkgPath === "") {
-      parentName = makeName(data.name, pkg.version || data.version)
-      parentPath = ""
-    } else {
-      const name = pkgPath.split("node_modules/").pop()
-      parentName = makeName(name, pkg.version)
-      parentPath = pkgPath
+  while (true) {
+    const candidate = currentPath
+      ? `${currentPath}/node_modules/${depName}`
+      : `node_modules/${depName}`
+
+    if (packages[candidate]) {
+      return candidate
     }
 
-    for (const dep of Object.keys(pkg.dependencies || {})) {
+    if (currentPath === "") {
+      break
+    }
 
-      // Try both as local and hoisted dependency
-      const candidates = [
-        `${parentPath}/node_modules/${dep}`.replace(/^\//, ""),
-        `node_modules/${dep}`
-      ]
+    currentPath = parentPath(currentPath)
 
-      let depPkg = null
+    if (currentPath === null) {
+      break
+    }
+  }
 
-      // First candidate match wins
-      for (const candidate of candidates) {
-        if (packages[candidate]) {
-          depPkg = packages[candidate]
-          break
-        }
+  return null
+}
+
+function addMetadata(metadata, id, pkg) {
+  const current = metadata.get(id) ?? {
+    sources: new Set(),
+    integrities: new Set()
+  }
+
+  if (pkg.resolved !== undefined) {
+    current.sources.add(pkg.resolved)
+  }
+
+  if (pkg.integrity !== undefined) {
+    current.integrities.add(pkg.integrity)
+  }
+
+  metadata.set(id, current)
+}
+
+function buildGraph(lockfile) {
+  const nodes = new Set()
+  const edges = []
+  const metadata = new Map()
+  const packages = lockfile.packages ?? {}
+
+  for (const pkgPath in packages) {
+    const pkg = packages[pkgPath]
+    const fromName = nodeId(pkgPath, pkg)
+    const dependencies = getDependencies(pkg)
+
+    nodes.add(fromName)
+    addMetadata(metadata, fromName, pkg)
+
+    for (const [depName, type] of dependencies) {
+      const fromInstance = pkgPath
+      const toInstance = resolvePath(fromInstance, depName, packages)
+
+      if (!toInstance) {
+        continue
       }
 
-      // Skips unresolved dependencies
-      // TODO: Decide whether unresolved dependencies should be reported instead of skipped
-      if (!depPkg || !depPkg.version) continue
+      const toPkg = packages[toInstance]
+      const toName = nodeId(toInstance, toPkg)
 
-      const childName = makeName(dep, depPkg.version)
-
-      edges.push([
-        parentName,
-        childName,
-        pickAttrs(depPkg, attrFilter)
-      ])
+      edges.push({
+        from: fromName,
+        to: toName,
+        type
+      })
     }
   }
 
-  return edges
+  return { nodes, edges, metadata }
 }
 
-/**
- * Extract dependency edges from a npm/rnpm lockfile v1
- * 
- * An edge represents a dependency relationship: [parentName, childName, attributes],
- * where parentName and childName are of the form "name@version"
- * 
- * Since lockfile v1 is structured differently compared to v2/v3, 
- * we traverse the tree breadth-first and record the edges
- * 
- * Notes:
- * - Lockfile v1 represents dependencies as a nested tree structure
- * - Like edgesFromLockV3, only the logical dependency graph is considered
- * 
- * @param {object} data - Parsed lockfile JSON 
- * @param {Set<string>|null} attrFilter - Attributes to include for edges
- * @returns {Array<[string, string, Array]>} List of dependency edges
- */
-function edgesFromLockV1(data, attrFilter) {
+function edgeKey(edge) {
+  return `${edge.from}|${edge.to}|${edge.type}`
+}
 
-  const edges = []
-  const queue = []
-  
-  const rootName = makeName(data.name, data.version)
+function edgeShapeKey(edge) {
+  return `${edge.from}|${edge.to}`
+}
 
-  for (const [childName, child] of Object.entries(data.dependencies || {})) {
+function packageFromEdgeKey(key) {
+  return key.split("|")[1] ?? key
+}
 
-    // Only process dependencies with a specified version
-    // TODO: Verify if any valid lockfile entries may lack a version
-    if (!child.version) continue
-    const childFull = makeName(childName, child.version)
+function difference(setA, setB) {
+  return [...setA].filter(item => !setB.has(item))
+}
 
-    edges.push([
-      rootName,
-      childFull,
-      pickAttrs(child, attrFilter)
-    ])
+function subject(items, mapper = item => item) {
+  const names = [...new Set(items.map(mapper))]
+  if (names.length === 1) return names[0]
+  return "multiple packages"
+}
 
-    queue.push([childName, child])
+function failure(reason, items, mapper) {
+  return {
+    ok: false,
+    reason,
+    subject: subject(items, mapper),
+    message: `${reason} for ${subject(items, mapper)}`
+  }
+}
+
+function emptyMetadata() {
+  return {
+    sources: new Set(),
+    integrities: new Set()
+  }
+}
+
+function setsEqual(a, b) {
+  if (a.size !== b.size) return false
+
+  for (const value of a) {
+    if (!b.has(value)) return false
   }
 
-  let i = 0
+  return true
+}
 
-  // BF traversal of the dependency tree
-  while (i < queue.length) {
+function compareMetadata(graphA, graphB) {
+  for (const node of graphA.nodes) {
+    if (!graphB.nodes.has(node)) continue
 
-    const [parentRaw, node] = queue[i++]
-    const parentFull = makeName(parentRaw, node.version)
+    const metaA = graphA.metadata.get(node) ?? emptyMetadata()
+    const metaB = graphB.metadata.get(node) ?? emptyMetadata()
 
-    for (const [childName, child] of Object.entries(node.dependencies || {})) {
+    if (!setsEqual(metaA.sources, metaB.sources)) {
+      return failure("source mismatch", [node])
+    }
 
-      // Only process dependencies with a specified version
-      // TODO: Verify if any valid lockfile entries may lack a version
-      if (!child.version) continue
-      const childFull = makeName(childName, child.version)
-
-      edges.push([
-        parentFull,
-        childFull,
-        pickAttrs(child, attrFilter)
-      ])
-
-      queue.push([childName, child])
+    if (!setsEqual(metaA.integrities, metaB.integrities)) {
+      return failure("tarball integrity mismatch", [node])
     }
   }
 
-  return edges
+  return { ok: true }
 }
 
-/**
- * Computes a deterministic hash of a lockfile's dependency graph.
- *
- * The lockfile is transformed into a canonical representation by:
- * 1. Extracting dependency edges
- * 2. Sorting edges deterministically
- * 3. Serializing to JSON
- * 4. Hashing using SHA-256
- *
- * This allows comparison of lockfiles based on logical dependency structure,
- * independent of ordering or formatting differences.
- *
- * @param {string} lockfilePath - Path to lockfile
- * @param {Set<string>|null} attrFilter - Attributes to include for edges
- * @returns {string} SHA-256 hash of the canonical dependency graph
- */
-function graphHash(lockfilePath, attrFilter = null) {
+function compareGraphs(graphA, graphB) {
+  const removedNodes = difference(graphA.nodes, graphB.nodes)
+  const addedNodes = difference(graphB.nodes, graphA.nodes)
 
-  const data = JSON.parse(fs.readFileSync(lockfilePath, "utf8"))
+  if (removedNodes.length > 0 || addedNodes.length > 0) {
+    const removedNames = new Set(removedNodes.map(packageNameFromNode))
+    const versionMismatches = addedNodes.filter(node =>
+      removedNames.has(packageNameFromNode(node))
+    )
 
-  let edges
+    if (versionMismatches.length > 0) {
+      return failure("mismatching versions", versionMismatches, packageNameFromNode)
+    }
 
-  // Choose extraction method based on lockfile version
-  // Default to v1 if version is missing
-  // TODO: Decide whether to default to a version or throw error
-  if ((data.lockfileVersion || 1) === 1) {
-    edges = edgesFromLockV1(data, attrFilter)
-  } else {
-    edges = edgesFromLockV3(data, attrFilter)
+    if (addedNodes.length > 0) {
+      return failure("new dependencies", addedNodes)
+    }
+
+    return failure("removed dependencies", removedNodes)
   }
 
-  // Sort edges deterministically to ensure consistent hashing
-  edges.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+  const edgesA = new Set(graphA.edges.map(edgeKey))
+  const edgesB = new Set(graphB.edges.map(edgeKey))
+  const removedEdges = difference(edgesA, edgesB)
+  const addedEdges = difference(edgesB, edgesA)
 
-  // Serialize canonical edge list
-  const canonical = JSON.stringify(edges)
+  if (removedEdges.length > 0 || addedEdges.length > 0) {
+    const shapesA = new Set(graphA.edges.map(edgeShapeKey))
+    const typeMismatches = graphB.edges.filter(edge =>
+      shapesA.has(edgeShapeKey(edge)) && !edgesA.has(edgeKey(edge))
+    )
 
-  // Compute SHA-256 hash of canonical representation
-  return crypto
-    .createHash("sha256")
-    .update(canonical)
-    .digest("hex")
+    if (typeMismatches.length > 0) {
+      return failure("dependency type mismatch", typeMismatches, edge => edge.to)
+    }
+
+    if (addedEdges.length > 0) {
+      return failure("new dependencies", addedEdges, packageFromEdgeKey)
+    }
+
+    return failure("removed dependencies", removedEdges, packageFromEdgeKey)
+  }
+
+  const metadataResult = compareMetadata(graphA, graphB)
+  if (!metadataResult.ok) return metadataResult
+
+  return { ok: true, message: "lockfiles match" }
 }
 
 export function compareLockfiles(fileA, fileB) {
+  const graphA = buildGraph(readJson(fileA))
+  const graphB = buildGraph(readJson(fileB))
 
-  const modes = {
-    structure: null,
-    peer: new Set(["peer"]),
-    dev: new Set(["dev"]),
-    optional: new Set(["optional"])
-  }
-
-  const results = {}
-
-  for (const [name, attrs] of Object.entries(modes)) {
-
-    const h1 = graphHash(fileA, attrs)
-    const h2 = graphHash(fileB, attrs)
-
-    results[name] = h1 === h2
-  }
-
-  for (const key of ["structure", "peer", "dev", "optional"]) {
-    console.log(`${key.padEnd(10)}: ${results[key]}`)
-  }
-
-  return Object.values(results).every(Boolean)
+  return compareGraphs(graphA, graphB)
 }
+
+export { buildGraph }

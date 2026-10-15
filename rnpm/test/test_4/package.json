@@ -1,0 +1,68 @@
+{
+  "name": "webgl-plot",
+  "version": "1.1.2",
+  "description": "High-performance 2D plotting library based on native WebGL",
+  "main": "./dist/webglplot.umd.js",
+  "module": "./dist/webglplot.mjs",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/webglplot.d.ts",
+      "require": "./dist/webglplot.umd.js",
+      "import": "./dist/webglplot.mjs"
+    }
+  },
+  "keywords": [
+    "webgl",
+    "plot",
+    "realtime",
+    "opengl",
+    "2d",
+    "high-performance"
+  ],
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@microsoft/api-extractor": "^7.56.3",
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^25.2.3",
+    "eslint": "^9.39.2",
+    "globals": "^17.3.0",
+    "typedoc": "^0.28.17",
+    "typedoc-plugin-markdown": "^4.10.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.55.0",
+    "vercel": "^50.17.1",
+    "vite": "^7.3.1",
+    "vite-plugin-dts": "^4.5.4",
+    "@codemirror/commands": "^6.10.2",
+    "@codemirror/lang-javascript": "^6.2.4",
+    "@codemirror/language": "^6.12.1",
+    "@codemirror/state": "^6.5.4",
+    "@codemirror/view": "^6.39.14",
+    "playwright": "^1.58.2"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit && eslint",
+    "test:html": "vite --force -c demos/vite.config.mts --port 5175 --strictPort",
+    "build:demos": "vite build -c demos/vite.config.mts",
+    "test:thick:playwright": "node demos/check-thick-line-playwright.js",
+    "test:pw": "playwright test --config=playwright.config.ts",
+    "doc": "typedoc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danchitnis/webgl-plot.git"
+  },
+  "author": "Danial Chitnis",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/danchitnis/webgl-plot/issues"
+  },
+  "homepage": "https://github.com/danchitnis/webgl-plot",
+  "dependencies": {}
+}

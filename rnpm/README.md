@@ -6,57 +6,25 @@ Prototype for verifiable dependency resolution for npm. The project has only bee
 
 ## How to install
 
-### 1. OSS-rebuild, timewarp
-This project requires a fork of OSS-rebuild's timewarp. To install:
-
-```
-git clone https://github.com/TimothyLindquist/oss-rebuild.git
-cd oss-rebuild
-go build ./cmd/timewarp
-```
-```
-mkdir -p "$HOME/.local/bin"
-mv timewarp "$HOME/.local/bin/"
-export PATH="$HOME/.local/bin:$PATH"
-source ~/.bashrc   # or `source ~/.zshrc` depending on your shell
-```
-
-### 2. Clone and install
-
-#### GitHub
+Clone the repository, enter the `rnpm` package directory, and link it globally.
 
 Using HTTPS:
 
 ```
 git clone https://github.com/chains-project/ReSolVer.git
-cd ReSolVer
-git checkout js-rewrite
+cd ReSolVer/rnpm
+npm link
 ```
 
 Using SSH (if configured):
 
 ```
 git clone git@github.com/chains-project/ReSolVer.git
-cd ReSolVer
-git checkout js-rewrite
+cd ReSolVer/rnpm
+npm link
 ```
 
-#### Install
-
-Recommended (no sudo):
-
-```
-mkdir -p ~/.npm-global
-npm config set prefix '~/.npm-global'
-export PATH="$HOME/.npm-global/bin:$PATH"
-source ~/.bashrc
-```
-
-With sudo:
-
-```
-sudo npm link
-```
+If your npm global prefix requires elevated permissions, configure a user-owned npm prefix first or use your system's preferred Node version manager before running `npm link`.
 
 ---
 
@@ -64,13 +32,13 @@ sudo npm link
 
 ### Commands
 The currently supported commands are:
-`install`, `i`, `init`, `update`, and `verify`.
+`install`, `i`, `uninstall`, `remove`, `rm`, `un`, `init`, `update`, and `verify`.
 
 ### Flags
 
 Most npm flags are not explicitly supported or tested.
 
-For consistent behavior, it is recommended to use:
+For security and efficiency, it is recommended to use:
 - `--package-lock-only`
 - `--ignore-scripts`
 
@@ -97,10 +65,6 @@ rnpm verify
 
 Expected output:
 ```
-structure : true
-peer      : true
-dev       : true
-optional  : true
 Verification completed
 ```
 
@@ -128,8 +92,7 @@ The following fields are appended to the lockfile produced by npm:
     - `npm` - npm version used for the command
     - `time` - timestamp (RFC 3339), e.g. `2026-03-17T15:18:17.497Z`
 
-      Used during verification to query the registry state at that
-      point in time.
+      Used during verification with npm's `--before` flag.
 
 ### `rnpm-replication.json`
 A reconstructed `package-lock.json` produced during verification,
@@ -144,16 +107,8 @@ Commands behave like their `npm` counterparts, with the exception that
 unlike `npm init`.
 
 The `verify` command generates a reconstructed lockfile,
-`rnpm-replication.json`, and prints the following checks:
-
-- `structure` — compares the dependency graph structure (edges only),
-  ignoring dependency attributes.
-
-- `peer` — verifies that peer dependencies are preserved.
-
-- `dev` — verifies that dev dependencies are preserved.
-
-- `optional` — verifies that optional dependencies are preserved.
+`rnpm-replication.json`, and compares the logical dependency graph,
+dependency types, package sources, and tarball integrity values.
 
 ---
 

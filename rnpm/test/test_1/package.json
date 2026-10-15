@@ -1,5 +1,5 @@
 {
-  "name": "tst",
+  "name": "test_1",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -11,6 +11,6 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "react": "^19.2.4"
+    "react": "^19.2.5"
   }
 }

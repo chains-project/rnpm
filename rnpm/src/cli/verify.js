@@ -1,82 +1,100 @@
 import fs from "fs"
 import path from "path"
 import os from "os"
-import { spawn, execSync } from "child_process"
-import { generateProof, compareProof } from "../core/verifier.js"
+import { execSync } from "child_process"
+import {
+  backupLockfile,
+  compareProof,
+  generateProof,
+  removeBackup,
+  restoreBackupIfNeeded,
+} from "../core/verifier.js"
 import { promptYesNo } from "../utils/prompt.js"
-import { waitForPort } from "../utils/port.js"
+
+const defaultVerifyDeps = {
+  backupLockfile,
+  compareProof,
+  execSync,
+  existsSync: fs.existsSync,
+  generateProof,
+  mkdtempSync: fs.mkdtempSync,
+  moveFileSync,
+  promptYesNo,
+  removeBackup,
+  restoreBackupIfNeeded,
+  restoreEnvironment,
+  rmSync: fs.rmSync,
+}
 
 /**
  * Verifies that the current lockfile can be deterministically reproduced.
  *
  * The process:
  * - Optionally reuses an existing replication proof
- * - Starts a timewarp registry for deterministic dependency resolution
- * - Replays recorded install history in a temporary environment
+ * - Replays recorded install history in a temporary environment using npm --before
  * - Generates a replicated lockfile
  * - Compares the replicated lockfile with the original
  *
  * Side effects:
  * - Temporarily modifies Node and npm versions
- * - Starts and stops a background process (timewarp)
  * - Creates and deletes a temporary working directory
  *
  * @param {string[]} args - CLI arguments (supports --regen to force regeneration)
  */
 export async function runVerify(args = []) {
+  return runVerifyWith(args, defaultVerifyDeps)
+}
 
+async function runVerifyWith(args = [], deps) {
   // Allow flag to skip regeneration prompt
   const forceRegen = args.includes("--regen")
+  const nonInteractive = args.includes("--non-interactive") || args.includes("--yes")
+  const keepNpm = args.includes("--keep-npm")
 
   const root = process.cwd()
-  const tmp = path.join(os.tmpdir(), "rnpm")
+  const tmp = deps.mkdtempSync(path.join(os.tmpdir(), "rnpm-"))
+  const backupDir = path.join(tmp, ".backup")
   const proofPath = path.join(root, "rnpm-replication.json")
   const tmpProofPath = path.join(tmp, "rnpm-replication.json")
 
   let useExistingProof = false
 
   // If a previous replication file exists, optionally reuse it
-  if (!forceRegen && fs.existsSync(proofPath)) {
-
-    useExistingProof = await promptYesNo(
-      "rnpm-replication.json already exists. Verify existing proof?"
-    )
+  if (!forceRegen && deps.existsSync(proofPath)) {
+    if (!nonInteractive) {
+      useExistingProof = await deps.promptYesNo(
+        "rnpm-replication.json already exists. Verify existing proof?"
+      )
+    }
   }
 
   if (useExistingProof) {
-    compareProof()
+    try {
+      deps.compareProof()
+      console.log("Verification completed")
+    } catch (err) {
+      console.error("Verification failed:", err.message)
+      process.exitCode = 1
+    }
+
     return
   }
 
   // Save environment for restoration
-  const originalNpm = execSync("npm -v", { encoding: "utf8" }).trim()
-
-  let timewarp = null
-
-  // Reset temp proof workspace
-  if (fs.existsSync(tmp)) {
-    fs.rmSync(tmp, { recursive: true, force: true })
-  }
-
-  fs.mkdirSync(tmp, { recursive: true })
+  const originalNpm = deps.execSync("npm -v", { encoding: "utf8" }).trim()
 
   try {
-
-    // Start timewarp registry. Used to filter dependencies by publish date
-    timewarp = startTimewarp()
-
-    // Wait until registry is reachable
-    await waitForPort(8081)
+    const backupState = deps.backupLockfile(root, backupDir)
 
     // Replicate lockfile
-    await generateProof(tmp)
+    await deps.generateProof(tmp)
 
     // Move the generated proof from the temp workspace into the current dir
-    fs.rmSync(proofPath, { force: true })
-    fs.renameSync(tmpProofPath, proofPath)
+    deps.rmSync(proofPath, { force: true })
+    deps.moveFileSync(tmpProofPath, proofPath)
 
     // Compare replicated lockfile with original
-    compareProof()
+    deps.compareProof(backupState.backupPath, proofPath)
 
     console.log("Verification completed")
 
@@ -86,45 +104,41 @@ export async function runVerify(args = []) {
     process.exitCode = 1
 
   } finally {
+    deps.restoreBackupIfNeeded(root, backupDir)
+    deps.removeBackup(root, backupDir)
 
     // Restore original environments
-    restoreEnvironment(originalNpm)
-
-    // Stop timewarp
-    if (timewarp) {
-      stopProcessTree(timewarp)
+    if (!keepNpm) {
+      deps.restoreEnvironment(originalNpm)
     }
 
     // Clean up tmp dir
-    if (fs.existsSync(tmp)) {
-      fs.rmSync(tmp, { recursive: true, force: true })
+    if (deps.existsSync(tmp)) {
+      deps.rmSync(tmp, { recursive: true, force: true })
     }
   }
 }
 
 // Restore npm versions
 function restoreEnvironment(npmVersion) {
-
   try {
     execSync(`npm install -g npm@${npmVersion}`, { stdio: "ignore" })
   } catch {}
 }
 
-// Start timewarp in background
-function startTimewarp() {
-  return spawn("timewarp", [], {
-    stdio: "ignore",
-    detached: true
-  })
+function moveFileSync(src, dst) {
+  try {
+    fs.renameSync(src, dst)
+  } catch (err) {
+    if (err.code === "EXDEV") {
+      fs.copyFileSync(src, dst)
+      fs.unlinkSync(src)
+    } else {
+      throw err
+    }
+  }
 }
 
-// Terminate timewarp process group
-function stopProcessTree(child) {
-  try {
-    process.kill(-child.pid, "SIGTERM")
-  } catch {}
-
-  try {
-    child.kill("SIGTERM")
-  } catch {}
+export const __testing__ = {
+  runVerifyWith,
 }
